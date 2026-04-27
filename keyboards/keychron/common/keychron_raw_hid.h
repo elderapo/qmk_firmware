@@ -29,8 +29,15 @@ enum {
     KC_KEYCHRON_RGB         = 0xA8,
     KC_ANALOG_MATRIX        = 0xA9,
     KC_WIRELESS_DFU         = 0xAA,
-    KC_FACTORY_TEST         = 0xAB
+    KC_FACTORY_TEST         = 0xAB,
+    KC_GET_BATTERY_LEVEL    = 0xAC
 };
+
+/* XOR mask applied to wireless raw-HID payloads (in both directions) to
+ * avoid byte values that the LKBT51 transport mishandles (notably 0xFE).
+ * Same key picked by Tymon3310's vial-qmk fork; chosen to remap toxic
+ * values out of the way without intersecting common QMK opcodes. */
+#define WIRELESS_RAW_HID_XOR_KEY 0x28
 
 enum {
     // Byte 0
@@ -86,3 +93,4 @@ enum {
 };
 
 void kc_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len);
+bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length);

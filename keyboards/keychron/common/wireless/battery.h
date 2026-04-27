@@ -57,6 +57,15 @@ uint16_t battery_get_voltage(void);
 uint8_t  battery_get_percentage(void);
 bool     battery_is_empty(void);
 bool     battery_is_critical_low(void);
+
+/* Charge state machine, exposed over HID (KC_GET_BATTERY_LEVEL byte 2). */
+enum {
+    BAT_CHARGE_STATE_DISCHARGING = 0, /* no USB power source */
+    BAT_CHARGE_STATE_CHARGING    = 1, /* USB power present, GPIO says actively charging */
+    BAT_CHARGE_STATE_FULL        = 2, /* USB power present, GPIO says topped off */
+};
+uint8_t  battery_get_charge_state(void);
+
 bool     battery_power_on_sample(void);
 void     battery_timer_reset(void);
 void     battery_task(void);
