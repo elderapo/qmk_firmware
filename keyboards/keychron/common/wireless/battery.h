@@ -66,6 +66,18 @@ enum {
 };
 uint8_t  battery_get_charge_state(void);
 
+/* Push notification (KC_PUSH_BATTERY_NOTIFY = 0xAD) — host doesn't poll,
+ * keyboard reports changes asynchronously. battery_push_check() is
+ * called every battery_task() tick and decides whether to actually
+ * emit a frame: leading-edge fire on state change, trailing-edge sync
+ * after a debounce window if more changes happened mid-window, and
+ * heartbeat after long silence so the host can detect a dropped link.
+ * battery_push_force() resets the "last sent" cache so the next check
+ * resends current state — used on EVT_CONNECTED to re-prime the host
+ * after the keyboard reconnects to the dongle. */
+void     battery_push_check(void);
+void     battery_push_force(void);
+
 bool     battery_power_on_sample(void);
 void     battery_timer_reset(void);
 void     battery_task(void);
