@@ -166,6 +166,24 @@ bool battery_is_critical_low(void) {
     return critical_low > CRITICAL_LOW_COUNT;
 }
 
+/* GPIO-pin reading that battery_task() also uses for the LKBT51 charge LED,
+ * exposed for HID consumers (KC_GET_BATTERY_LEVEL byte 2). Without this,
+ * hosts cannot distinguish discharging from charging via external USB-C
+ * charger — the wireless battery query carries only the percentage, and
+ * the wired sibling PID does not enumerate when the keyboard charges from
+ * a wall adapter rather than the host. */
+uint8_t battery_get_charge_state(void) {
+#if defined(BAT_CHARGING_PIN)
+    if (!usb_power_connected())
+        return BAT_CHARGE_STATE_DISCHARGING;
+    return (gpio_read_pin(BAT_CHARGING_PIN) == BAT_CHARGING_LEVEL)
+               ? BAT_CHARGE_STATE_CHARGING
+               : BAT_CHARGE_STATE_FULL;
+#else
+    return BAT_CHARGE_STATE_DISCHARGING;
+#endif
+}
+
 void battery_check_empty(void) {
     if (voltage < EMPTY_VOLTAGE_VALUE) {
         if (bat_empty <= BATTERY_EMPTY_COUNT) {

@@ -34,6 +34,7 @@
 #endif
 #if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
 #    include "wireless.h"
+#    include "battery.h"
 #    ifdef LK_WIRELESS_ENABLE
 #        include "lkbt51.h"
 #    else
@@ -122,6 +123,11 @@ void kc_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len) {
     else if (wireless_get_state() == WT_CONNECTED) {
         extern wt_func_t wireless_transport;
         if (wireless_transport.send_raw_hid) {
+            /* Mirror the XOR mask applied by wireless.c on the receive path,
+             * so the host's decoder recovers the original bytes. */
+            for (uint8_t i = 0; i < len; i++) {
+                data[i] ^= WIRELESS_RAW_HID_XOR_KEY;
+            }
             wireless_transport.send_raw_hid(data, len);
         }
     }
@@ -262,6 +268,20 @@ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
             return true;
 
 #    endif
+        /* KC_GET_BATTERY_LEVEL: vendor extension. Response layout:
+         *   data[0] = 0xAC echo
+         *   data[1] = battery percentage (0..100), 0 if not yet sampled
+         *   data[2] = BAT_CHARGE_STATE_* (DISCHARGING/CHARGING/FULL) */
+        case KC_GET_BATTERY_LEVEL:
+#    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
+            data[1] = (wireless_get_state() == WT_CONNECTED) ? battery_get_percentage() : 0;
+            data[2] = battery_get_charge_state();
+#    else
+            data[1] = 0;
+            data[2] = 0;
+#    endif
+            break;
+
         default:
             return false;
     }
