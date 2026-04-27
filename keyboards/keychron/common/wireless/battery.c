@@ -29,6 +29,7 @@
 #include "analog.h"
 #include "backlit_indicator.h"
 #include "config.h"
+#include "keychron_raw_hid.h"
 
 #define BATTERY_EMPTY_COUNT 10
 #define CRITICAL_LOW_COUNT 20
@@ -184,6 +185,107 @@ uint8_t battery_get_charge_state(void) {
 #endif
 }
 
+/* --- Push notification path (KC_PUSH_BATTERY_NOTIFY = 0xAD) ---
+ *
+ * State sent to the host: percentage + charge_state (same layout as the
+ * 0xAC query response, just on a different opcode).
+ *
+ * Three triggers, all routing through battery_push_check():
+ *   1. Leading-edge: state changed *and* we're outside the debounce
+ *      window since the previous send → fire immediately.
+ *   2. Trailing-edge: state changed *during* the debounce window → defer
+ *      the value into `pending_*`; once the window closes (DEBOUNCE_MS
+ *      after the *most recent* change with no further change), send the
+ *      latest value. Guarantees that bursty transitions never silently
+ *      drop the final state.
+ *   3. Heartbeat: no send for HEARTBEAT_MS → re-emit current state so
+ *      the host's watchdog (DKMS keychron-battery) can tell live silence
+ *      ("nothing changed") from a dropped link.
+ *
+ * battery_push_force() invalidates the "last sent" cache so the next
+ * check re-emits regardless of whether the value actually changed —
+ * called on EVT_CONNECTED so the host gets a fresh state right after
+ * the keyboard reconnects. */
+#define BATTERY_PUSH_DEBOUNCE_MS  500
+#define BATTERY_PUSH_HEARTBEAT_MS 300000  /* 5 min */
+
+static uint8_t  last_pushed_pct    = 0xFF;  /* 0xFF = never pushed */
+static uint8_t  last_pushed_charge = 0xFF;
+static uint32_t last_push_t        = 0;
+
+static bool     pending_active = false;
+static uint8_t  pending_pct;
+static uint8_t  pending_charge;
+static uint32_t pending_t;
+
+static void battery_do_push(uint8_t pct, uint8_t charge) {
+#if defined(LK_WIRELESS_ENABLE)
+    if (wireless_get_state() != WT_CONNECTED) return;
+
+    extern wt_func_t wireless_transport;
+    if (!wireless_transport.send_raw_hid) return;
+
+    uint8_t buf[32] = {0};
+    buf[0] = KC_PUSH_BATTERY_NOTIFY;
+    buf[1] = pct;
+    buf[2] = charge;
+    /* Mirror the XOR mask kc_raw_hid_send applies on the response path. */
+    for (uint8_t i = 0; i < 32; i++) {
+        buf[i] ^= WIRELESS_RAW_HID_XOR_KEY;
+    }
+    wireless_transport.send_raw_hid(buf, 32);
+
+    last_pushed_pct    = pct;
+    last_pushed_charge = charge;
+    last_push_t        = rtc_timer_read_ms();
+#else
+    (void)pct; (void)charge;
+#endif
+}
+
+void battery_push_force(void) {
+    /* Invalidate the cache; next battery_push_check() re-emits. */
+    last_pushed_pct    = 0xFF;
+    last_pushed_charge = 0xFF;
+    pending_active     = false;
+}
+
+void battery_push_check(void) {
+    uint32_t now    = rtc_timer_read_ms();
+    uint8_t  pct    = battery_get_percentage();
+    uint8_t  charge = battery_get_charge_state();
+    bool     changed = (pct != last_pushed_pct) || (charge != last_pushed_charge);
+
+    if (!changed) {
+        /* Same state. Two reasons to still emit: pending trailing-edge
+         * push, or heartbeat after long silence. */
+        if (pending_active && (now - pending_t) >= BATTERY_PUSH_DEBOUNCE_MS) {
+            battery_do_push(pending_pct, pending_charge);
+            pending_active = false;
+            return;
+        }
+        if ((now - last_push_t) >= BATTERY_PUSH_HEARTBEAT_MS) {
+            battery_do_push(pct, charge);
+        }
+        return;
+    }
+
+    /* State changed. */
+    if ((now - last_push_t) < BATTERY_PUSH_DEBOUNCE_MS) {
+        /* Within debounce — defer. Overwrite any previous pending value
+         * with the latest (we always want the *most recent* state at the
+         * trailing edge, not the first one seen mid-burst). */
+        pending_active = true;
+        pending_pct    = pct;
+        pending_charge = charge;
+        pending_t      = now;
+    } else {
+        /* Past debounce — fire immediately (leading edge). */
+        battery_do_push(pct, charge);
+        pending_active = false;
+    }
+}
+
 void battery_check_empty(void) {
     if (voltage < EMPTY_VOLTAGE_VALUE) {
         if (bat_empty <= BATTERY_EMPTY_COUNT) {
@@ -251,4 +353,10 @@ void battery_task(void) {
         critical_low = false;
         indicator_battery_low_enable(false);
     }
+
+    /* Push check runs every battery_task tick. Internal debounce /
+     * heartbeat timers gate whether anything actually goes on the
+     * wire — outside of state changes this is a few comparisons and
+     * a timer read, cheap enough to call unconditionally. */
+    battery_push_check();
 }

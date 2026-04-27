@@ -523,6 +523,12 @@ void wireless_event_task(void) {
                 break;
             case EVT_CONNECTED:
                 wireless_enter_connected(event.params.hostIndex);
+                /* Re-establishing the link clears any state the host
+                 * cached from before — re-emit so the host's battery
+                 * watchdog (DKMS keychron-battery) doesn't show stale
+                 * "Discharging" or "Unknown" until the next state
+                 * change. */
+                battery_push_force();
                 break;
             case EVT_DISCOVERABLE:
                 wireless_enter_discoverable(event.params.hostIndex);

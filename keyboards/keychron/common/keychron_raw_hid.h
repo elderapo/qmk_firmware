@@ -30,7 +30,13 @@ enum {
     KC_ANALOG_MATRIX        = 0xA9,
     KC_WIRELESS_DFU         = 0xAA,
     KC_FACTORY_TEST         = 0xAB,
-    KC_GET_BATTERY_LEVEL    = 0xAC
+    KC_GET_BATTERY_LEVEL    = 0xAC,
+    /* Unsolicited keyboard → host push notification carrying current
+     * battery percentage and charge state, same payload layout as the
+     * 0xAC response. Sent on state change (debounced), on connection
+     * to the dongle, and as a heartbeat so the host can tell live
+     * silence from a dropped link. */
+    KC_PUSH_BATTERY_NOTIFY  = 0xAD
 };
 
 /* XOR mask applied to wireless raw-HID payloads (in both directions) to
