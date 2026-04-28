@@ -270,11 +270,22 @@ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
 #    endif
         /* KC_GET_BATTERY_LEVEL: vendor extension. Response layout:
          *   data[0] = 0xAC echo
-         *   data[1] = battery percentage (0..100), 0 if not yet sampled
-         *   data[2] = BAT_CHARGE_STATE_* (DISCHARGING/CHARGING/FULL) */
+         *   data[1] = battery percentage (0..100), 0 if firmware never sampled
+         *   data[2] = BAT_CHARGE_STATE_* (DISCHARGING/CHARGING/FULL)
+         *
+         * The earlier WT_CONNECTED guard zeroed byte 1 whenever the
+         * wireless link wasn't up — which made wired-mode pulls
+         * return "0%" even though battery_get_percentage() had a
+         * valid (last-sampled-while-radio-was-on) value cached.
+         * Returning the cached value is mildly stale but more
+         * informative than a hard zero, and the host-side decoder
+         * can already differentiate "real 0% (battery dying)" from
+         * "stale" via the charge_state byte (charging/full implies
+         * the cache reflects pre-cable state, not actual depletion).
+         * The host's fallback pull cadence keeps drift bounded. */
         case KC_GET_BATTERY_LEVEL:
 #    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
-            data[1] = (wireless_get_state() == WT_CONNECTED) ? battery_get_percentage() : 0;
+            data[1] = battery_get_percentage();
             data[2] = battery_get_charge_state();
 #    else
             data[1] = 0;
