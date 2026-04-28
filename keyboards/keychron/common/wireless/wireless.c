@@ -557,17 +557,14 @@ void wireless_event_task(void) {
             case EVT_CONECTION_INTERVAL:
                 report_buffer_set_inverval(event.params.interval);
                 break;
-#if defined(RAW_ENABLE)
+#if defined(RAW_ENABLE) && defined(LK_WIRELESS_ENABLE)
+            /* Stock upstream gates this on `WILRESS_RAW_ENABLE` (sic)
+             * — typo'd, never defined → dead code. Worse, the
+             * VIA-enabled branch upstream calls a `via_raw_hid_receive`
+             * symbol that doesn't exist in QMK. We just dispatch
+             * straight to kc_raw_hid_rx, which handles our 0xAC/0xAD
+             * opcodes; VIA-over-wireless was never real in stock. */
             case EVT_RAW_HID:
-                /* Wireless raw-HID payloads come XOR-encoded so they survive
-                 * the LKBT51 transport. Undo the mask before dispatch; our
-                 * kc_raw_hid_send re-applies it on the response path. */
-                for (uint8_t i = 0; i < 32; i++) {
-                    event.params.raw_hid_data[i] ^= WIRELESS_RAW_HID_XOR_KEY;
-                }
-                /* Route through kc_raw_hid_rx directly so our Keychron-extension
-                 * opcodes (KC_GET_BATTERY_LEVEL etc.) get a chance, regardless
-                 * of whether VIA is enabled. */
                 kc_raw_hid_rx(RAW_HID_SRC_WIRELESS, event.params.raw_hid_data, 32);
                 lpm_timer_reset();
                 break;

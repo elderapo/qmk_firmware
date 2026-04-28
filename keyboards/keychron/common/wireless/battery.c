@@ -187,52 +187,23 @@ uint8_t battery_get_charge_state(void) {
 
 /* --- Push notification path (KC_PUSH_BATTERY_NOTIFY = 0xAD) ---
  *
- * State sent to the host: percentage + charge_state (same layout as the
- * 0xAC query response, just on a different opcode).
+ * Push fires on state change only — no debounce, no heartbeat. Host
+ * driver dedupes by value at display level; ADC oscillation (e.g.
+ * 99↔100 near a threshold) generates a few extra wire reports but
+ * each is idempotent for the host.
  *
- * Two triggers, both routing through battery_push_check():
- *   1. Leading-edge: state changed *and* we're outside the debounce
- *      window since the previous send → fire immediately.
- *   2. Trailing-edge: state changed *during* the debounce window → defer
- *      the value into `pending_*`; once the window closes (DEBOUNCE_MS
- *      after the *most recent* change with no further change), send the
- *      latest value. Guarantees that bursty transitions never silently
- *      drop the final state.
+ * Both transports tried every push: wireless via lkbt51 (gated on
+ * WT_CONNECTED) and USB raw HID via 0x0b30 (gated on USB being the
+ * active host driver). Land on different host PIDs (0xd030 vs
+ * 0x0b30) so dual-send is safe — driver sees them on separate
+ * hidraws and dedupes by value.
  *
- * No heartbeat: the host driver gets liveness from the LKBT51 dongle's
- * own connect/disconnect events (the `54 e2 01 XX` reports on dongle
- * intf 1), and from the absence of those events. A periodic push would
- * just wake the keyboard from STOP mode every interval for no
- * additional information — battery percentage drift naturally fires a
- * push on every 1% change anyway.
- *
- * Two transport paths, both attempted on every push:
- *   - Wireless tunnel via lkbt51 → dongle → host. Gated by
- *     WT_CONNECTED, payload XOR-masked with 0x28 to survive the
- *     LKBT51 wireless module's mishandling of toxic bytes.
- *   - USB raw HID via the wired interface (0x0b30). Gated by the
- *     USB driver being the active host driver — true in switch=wired
- *     mode (firmware delivers HID input over cable). Plain bytes,
- *     no XOR (the wired path doesn't have the LKBT51 quirk).
- *
- * Both paths are tried every push so the host listener works in
- * whichever mode the user has the switch in, including 2.4G+cable
- * where both transports are simultaneously alive.
- *
- * battery_push_force() invalidates the "last sent" cache so the next
- * check re-emits regardless of whether the value actually changed —
- * called on EVT_CONNECTED so the host gets a fresh state right after
- * the keyboard reconnects. */
-#define BATTERY_PUSH_DEBOUNCE_MS  500
+ * battery_push_force() invalidates the cache so the next check
+ * re-emits unconditionally; called on EVT_CONNECTED to prime the
+ * host immediately after the keyboard reconnects. */
 
-static uint8_t  last_pushed_pct    = 0xFF;  /* 0xFF = never pushed */
-static uint8_t  last_pushed_charge = 0xFF;
-static uint32_t last_push_t        = 0;
-
-static bool     pending_active = false;
-static uint8_t  pending_pct;
-static uint8_t  pending_charge;
-static uint32_t pending_t;
+static uint8_t last_pushed_pct    = 0xFF;  /* 0xFF = never pushed */
+static uint8_t last_pushed_charge = 0xFF;
 
 static void battery_do_push(uint8_t pct, uint8_t charge) {
     uint8_t buf[32] = {0};
@@ -246,34 +217,28 @@ static void battery_do_push(uint8_t pct, uint8_t charge) {
     if (wireless_get_state() == WT_CONNECTED) {
         extern wt_func_t wireless_transport;
         if (wireless_transport.send_raw_hid) {
-            /* Don't mutate `buf` — the USB branch below needs it
-             * unmodified. Build a separate XOR'd copy. */
-            uint8_t xor_buf[32];
-            for (uint8_t i = 0; i < 32; i++) {
-                xor_buf[i] = buf[i] ^ WIRELESS_RAW_HID_XOR_KEY;
-            }
-            wireless_transport.send_raw_hid(xor_buf, 32);
+            wireless_transport.send_raw_hid(buf, 32);
             sent = true;
         }
     }
 #endif
 
-    /* USB cable path. host_get_driver() == &chibios_driver means USB
-     * is the currently-active HID transport — true in switch=wired
-     * mode and in the brief pre-pairing window after wireless mode
-     * is selected. In switch=2.4G + cable plugged we deliberately
-     * still send via wireless (the if above) and skip USB to avoid
-     * delivering the same payload twice on the same host. */
+#if defined(RAW_ENABLE)
+    /* USB path. Active when host_get_driver() == &chibios_driver —
+     * true in switch=wired and the brief pre-pairing window. Lands
+     * on host PID 0x0b30 (separate hidraw from the dongle's
+     * 0xd030), so dual-send with the wireless branch above is fine:
+     * host sees both reports on different channels and dedupes. */
     extern host_driver_t chibios_driver;
     if (host_get_driver() == &chibios_driver && chibios_driver.send_raw_hid) {
         chibios_driver.send_raw_hid(buf, 32);
         sent = true;
     }
+#endif
 
     if (sent) {
         last_pushed_pct    = pct;
         last_pushed_charge = charge;
-        last_push_t        = rtc_timer_read_ms();
     }
 }
 
@@ -281,39 +246,13 @@ void battery_push_force(void) {
     /* Invalidate the cache; next battery_push_check() re-emits. */
     last_pushed_pct    = 0xFF;
     last_pushed_charge = 0xFF;
-    pending_active     = false;
 }
 
 void battery_push_check(void) {
-    uint32_t now    = rtc_timer_read_ms();
-    uint8_t  pct    = battery_get_percentage();
-    uint8_t  charge = battery_get_charge_state();
-    bool     changed = (pct != last_pushed_pct) || (charge != last_pushed_charge);
-
-    if (!changed) {
-        /* Same state. Only reason to still emit: pending trailing-edge
-         * push (state changed during the debounce window and we
-         * deferred sending the final value). */
-        if (pending_active && (now - pending_t) >= BATTERY_PUSH_DEBOUNCE_MS) {
-            battery_do_push(pending_pct, pending_charge);
-            pending_active = false;
-        }
-        return;
-    }
-
-    /* State changed. */
-    if ((now - last_push_t) < BATTERY_PUSH_DEBOUNCE_MS) {
-        /* Within debounce — defer. Overwrite any previous pending value
-         * with the latest (we always want the *most recent* state at the
-         * trailing edge, not the first one seen mid-burst). */
-        pending_active = true;
-        pending_pct    = pct;
-        pending_charge = charge;
-        pending_t      = now;
-    } else {
-        /* Past debounce — fire immediately (leading edge). */
+    uint8_t pct    = battery_get_percentage();
+    uint8_t charge = battery_get_charge_state();
+    if (pct != last_pushed_pct || charge != last_pushed_charge) {
         battery_do_push(pct, charge);
-        pending_active = false;
     }
 }
 
@@ -385,9 +324,9 @@ void battery_task(void) {
         indicator_battery_low_enable(false);
     }
 
-    /* Push check runs every battery_task tick. Internal debounce /
-     * heartbeat timers gate whether anything actually goes on the
-     * wire — outside of state changes this is a few comparisons and
-     * a timer read, cheap enough to call unconditionally. */
+    /* Push check runs every battery_task tick. Internal debounce
+     * timer gates whether anything actually goes on the wire —
+     * outside of state changes this is a few comparisons and a
+     * timer read, cheap enough to call unconditionally. */
     battery_push_check();
 }

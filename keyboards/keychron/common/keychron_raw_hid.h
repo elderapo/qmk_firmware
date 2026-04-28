@@ -31,19 +31,13 @@ enum {
     KC_WIRELESS_DFU         = 0xAA,
     KC_FACTORY_TEST         = 0xAB,
     KC_GET_BATTERY_LEVEL    = 0xAC,
-    /* Unsolicited keyboard → host push notification carrying current
-     * battery percentage and charge state, same payload layout as the
-     * 0xAC response. Sent on state change (debounced), on connection
-     * to the dongle, and as a heartbeat so the host can tell live
-     * silence from a dropped link. */
+    /* Unsolicited keyboard → host push carrying current battery
+     * percentage and charge state. Same payload as the 0xAC response.
+     * Fires on state change (debounced) and on EVT_CONNECTED to
+     * re-prime after reconnect. No heartbeat — host gets liveness
+     * from the dongle's `54 e2 01 XX` link events. */
     KC_PUSH_BATTERY_NOTIFY  = 0xAD
 };
-
-/* XOR mask applied to wireless raw-HID payloads (in both directions) to
- * avoid byte values that the LKBT51 transport mishandles (notably 0xFE).
- * Same key picked by Tymon3310's vial-qmk fork; chosen to remap toxic
- * values out of the way without intersecting common QMK opcodes. */
-#define WIRELESS_RAW_HID_XOR_KEY 0x28
 
 enum {
     // Byte 0

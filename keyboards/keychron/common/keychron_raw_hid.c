@@ -123,11 +123,6 @@ void kc_raw_hid_send(uint8_t src, uint8_t *data, uint8_t len) {
     else if (wireless_get_state() == WT_CONNECTED) {
         extern wt_func_t wireless_transport;
         if (wireless_transport.send_raw_hid) {
-            /* Mirror the XOR mask applied by wireless.c on the receive path,
-             * so the host's decoder recovers the original bytes. */
-            for (uint8_t i = 0; i < len; i++) {
-                data[i] ^= WIRELESS_RAW_HID_XOR_KEY;
-            }
             wireless_transport.send_raw_hid(data, len);
         }
     }
