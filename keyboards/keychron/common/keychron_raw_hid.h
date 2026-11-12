@@ -33,7 +33,7 @@ enum {
     KC_GET_BATTERY_LEVEL    = 0xAC,
     /* Unsolicited keyboard → host push carrying current battery
      * percentage and charge state. Same payload as the 0xAC response.
-     * Fires on state change (debounced) and on EVT_CONNECTED to
+     * Fires on every state change (no debounce) and on EVT_CONNECTED to
      * re-prime after reconnect. No heartbeat — host gets liveness
      * from the dongle's `54 e2 01 XX` link events. */
     KC_PUSH_BATTERY_NOTIFY  = 0xAD

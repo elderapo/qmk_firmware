@@ -581,7 +581,7 @@ void wireless_event_task(void) {
                 wireless_enter_connected(event.params.hostIndex);
                 /* Re-establishing the link clears any state the host
                  * cached from before — re-emit so the host's battery
-                 * watchdog (DKMS keychron-battery) doesn't show stale
+                 * bridge (keychron-uhid) doesn't show stale
                  * "Discharging" or "Unknown" until the next state
                  * change. */
                 battery_push_force();
@@ -619,10 +619,26 @@ void wireless_event_task(void) {
              * VIA-enabled branch upstream calls a `via_raw_hid_receive`
              * symbol that doesn't exist in QMK. We just dispatch
              * straight to kc_raw_hid_rx, which handles our 0xAC/0xAD
-             * opcodes; VIA-over-wireless was never real in stock. */
+             * opcodes; VIA-over-wireless was never real in stock.
+             *
+             * Allowlist, not the full kc_raw_hid_rx surface: reviving
+             * this path otherwise exposes every Keychron opcode to any
+             * process that can write the dongle's hidraw — EEPROM
+             * writes (0xA7 setters, 0xA8/0xA9), factory test (0xAB),
+             * and 0xAA, whose USB-only guard falls through into the
+             * 0xAB case for wireless sources. Only read-only queries
+             * pass; everything else is dropped without a reply. */
             case EVT_RAW_HID:
-                kc_raw_hid_rx(RAW_HID_SRC_WIRELESS, event.params.raw_hid_data, 32);
-                lpm_timer_reset();
+                switch (event.params.raw_hid_data[0]) {
+                    case KC_GET_PROTOCOL_VERSION:
+                    case KC_GET_FIRMWARE_VERSION:
+                    case KC_GET_BATTERY_LEVEL:
+                        kc_raw_hid_rx(RAW_HID_SRC_WIRELESS, event.params.raw_hid_data, 32);
+                        lpm_timer_reset();
+                        break;
+                    default:
+                        break;
+                }
                 break;
 #endif
             default:

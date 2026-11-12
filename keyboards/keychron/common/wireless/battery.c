@@ -30,6 +30,7 @@
 #include "backlit_indicator.h"
 #include "config.h"
 #include "keychron_raw_hid.h"
+#include "raw_hid.h"
 
 #define BATTERY_EMPTY_COUNT 10
 #define CRITICAL_LOW_COUNT 20
@@ -192,11 +193,13 @@ uint8_t battery_get_charge_state(void) {
  * 99↔100 near a threshold) generates a few extra wire reports but
  * each is idempotent for the host.
  *
- * Both transports tried every push: wireless via lkbt51 (gated on
- * WT_CONNECTED) and USB raw HID via 0x0b30 (gated on USB being the
- * active host driver). Land on different host PIDs (0xd030 vs
- * 0x0b30) so dual-send is safe — driver sees them on separate
- * hidraws and dedupes by value.
+ * Both transports tried every push, through the same
+ * kc_raw_hid_send() the 0xAC pull replies use: wireless (only while
+ * WT_CONNECTED — never kicks off a reconnect, unlike
+ * wireless_driver.send_raw_hid) and USB raw HID via 0x0b30 (only
+ * while USB is the active host driver). Land on different host PIDs
+ * (0xd030 vs 0x0b30) so dual-send is safe — the host sees them on
+ * separate hidraws and dedupes by value.
  *
  * battery_push_force() invalidates the cache so the next check
  * re-emits unconditionally; called on EVT_CONNECTED to prime the
@@ -206,32 +209,27 @@ static uint8_t last_pushed_pct    = 0xFF;  /* 0xFF = never pushed */
 static uint8_t last_pushed_charge = 0xFF;
 
 static void battery_do_push(uint8_t pct, uint8_t charge) {
-    uint8_t buf[32] = {0};
+    bool sent = false;
+
+#if defined(RAW_ENABLE)
+    uint8_t buf[32] = {0};  /* RAW_EPSIZE; send_raw_hid drops any other length */
     buf[0] = KC_PUSH_BATTERY_NOTIFY;
     buf[1] = pct;
     buf[2] = charge;
 
-    bool sent = false;
-
-#if defined(LK_WIRELESS_ENABLE)
+#    if defined(LK_WIRELESS_ENABLE)
     if (wireless_get_state() == WT_CONNECTED) {
-        extern wt_func_t wireless_transport;
-        if (wireless_transport.send_raw_hid) {
-            wireless_transport.send_raw_hid(buf, 32);
-            sent = true;
-        }
+        kc_raw_hid_send(RAW_HID_SRC_WIRELESS, buf, sizeof(buf));
+        sent = true;
     }
-#endif
+#    endif
 
-#if defined(RAW_ENABLE)
-    /* USB path. Active when host_get_driver() == &chibios_driver —
-     * true in switch=wired and the brief pre-pairing window. Lands
-     * on host PID 0x0b30 (separate hidraw from the dongle's
-     * 0xd030), so dual-send with the wireless branch above is fine:
-     * host sees both reports on different channels and dedupes. */
+    /* USB path: true in switch=wired and the brief pre-pairing
+     * window. usb_endpoint_in_send() bounds the send at 100 ms if
+     * the host isn't draining the endpoint. */
     extern host_driver_t chibios_driver;
-    if (host_get_driver() == &chibios_driver && chibios_driver.send_raw_hid) {
-        chibios_driver.send_raw_hid(buf, 32);
+    if (host_get_driver() == &chibios_driver) {
+        kc_raw_hid_send(RAW_HID_SRC_USB, buf, sizeof(buf));
         sent = true;
     }
 #endif
@@ -324,9 +322,8 @@ void battery_task(void) {
         indicator_battery_low_enable(false);
     }
 
-    /* Push check runs every battery_task tick. Internal debounce
-     * timer gates whether anything actually goes on the wire —
-     * outside of state changes this is a few comparisons and a
-     * timer read, cheap enough to call unconditionally. */
+    /* Push check runs every battery_task tick. Outside of state
+     * changes it is two getters and two compares — nothing goes on
+     * the wire — cheap enough to call unconditionally. */
     battery_push_check();
 }
