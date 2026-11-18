@@ -54,3 +54,4 @@ bool usb_power_connected(void);
 bool lpm_is_kb_idle(void);
 bool lpm_set(pm_t mode);
 void lpm_task(void);
+bool lpm_wake_pending(void);

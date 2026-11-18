@@ -27,6 +27,7 @@
 #include "wireless.h"
 #include "lpm.h"
 #include "lpm_stm32f401.h"
+#include "lpm_diag.h"
 #include "config.h"
 #include "hal.h"
 
@@ -126,9 +127,19 @@ void lpm_standby(pm_t mode) {
     palSetLineMode(H1, PAL_MODE_INPUT_PULLDOWN);
 #endif
 
-    __WFI();
-
+    /* PRIMASK (not chSysLock, which masks via BASEPRI): WFI still returns
+     * on an interrupt that becomes pending while masked, so nothing that
+     * fires from here on is lost. Edges that fired earlier were already
+     * consumed by the EXTI ISR — lpm_wake_pending() re-checks the levels
+     * so a missed edge doesn't put us to sleep with a wake condition up. */
+    lpm_diag_standby_enter();
+    __disable_irq();
+    bool skipped = lpm_wake_pending();
+    if (!skipped) __WFI();
+    uint32_t exti_pending = EXTI->PR & EXTI->IMR;
     SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
+    __enable_irq();
+    lpm_diag_standby_exit(skipped, exti_pending);
 }
 
 void lpm_wakeup_init(void) {

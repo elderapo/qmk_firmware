@@ -48,6 +48,16 @@
 #    endif
 #endif
 
+#ifdef BOOTMAGIC_ENABLE
+/* Bootmagic (Esc held at power-up) still jumps to the bootloader, but no
+ * longer wipes EEPROM. The default (quantum/bootmagic/bootmagic.c) calls
+ * eeconfig_disable(), so an accidental Esc while plugging the cable or
+ * flipping the mode switch silently reset the VIA keymap, RGB and HE
+ * settings. Deliberate wipes remain: Fn+J+Z (factory_test.c, also clears
+ * 2.4G pairing) or Launcher's Reset. */
+void bootmagic_reset_eeprom(void) {}
+#endif
+
 #ifndef OS_INDICATION_COLOR_MAC
 #    define OS_INDICATION_COLOR_MAC \
         { .r = 255, .g = 0, .b = 0 }

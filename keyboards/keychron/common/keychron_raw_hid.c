@@ -35,6 +35,7 @@
 #if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
 #    include "wireless.h"
 #    include "battery.h"
+#    include "lpm_diag.h"
 #    ifdef LK_WIRELESS_ENABLE
 #        include "lkbt51.h"
 #    else
@@ -279,6 +280,13 @@ bool kc_raw_hid_rx(uint8_t src, uint8_t *data, uint8_t length) {
          * "stale" via the charge_state byte (charging/full implies
          * the cache reflects pre-cable state, not actual depletion).
          * The host's fallback pull cadence keeps drift bounded. */
+#    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
+        case KC_GET_LPM_DIAG:
+            memset(&data[2], 0, length - 2);
+            lpm_diag_read(data[1], &data[2], length - 2);
+            break;
+#    endif
+
         case KC_GET_BATTERY_LEVEL:
 #    if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
             data[1] = battery_get_percentage();

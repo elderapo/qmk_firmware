@@ -36,7 +36,11 @@ enum {
      * Fires on every state change (no debounce) and on EVT_CONNECTED to
      * re-prime after reconnect. No heartbeat — host gets liveness
      * from the dongle's `54 e2 01 XX` link events. */
-    KC_PUSH_BATTERY_NOTIFY  = 0xAD
+    KC_PUSH_BATTERY_NOTIFY  = 0xAD,
+    /* Read-only low-power diagnostics (RTC backup registers, see
+     * wireless/lpm_diag.h). Request [0xAE, page]; reply [0xAE, page,
+     * u32 LE...]: page 0 = BKP10..16, page 1 = BKP17..19. */
+    KC_GET_LPM_DIAG         = 0xAE
 };
 
 enum {

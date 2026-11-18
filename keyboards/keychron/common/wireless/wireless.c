@@ -633,6 +633,7 @@ void wireless_event_task(void) {
                     case KC_GET_PROTOCOL_VERSION:
                     case KC_GET_FIRMWARE_VERSION:
                     case KC_GET_BATTERY_LEVEL:
+                    case KC_GET_LPM_DIAG:
                         kc_raw_hid_rx(RAW_HID_SRC_WIRELESS, event.params.raw_hid_data, 32);
                         lpm_timer_reset();
                         break;

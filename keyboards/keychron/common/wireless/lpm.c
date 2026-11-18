@@ -34,6 +34,7 @@
 #include "battery.h"
 #include "report_buffer.h"
 #include "keychron_common.h"
+#include "lpm_diag.h"
 
 extern matrix_row_t matrix[MATRIX_ROWS];
 extern wt_func_t    wireless_transport;
@@ -66,6 +67,7 @@ void lpm_init(void) {
 #    endif
 #endif
     lpm_timer_reset();
+    lpm_diag_boot();
 }
 
 inline void lpm_timer_reset(void) {
@@ -229,7 +231,17 @@ __attribute__((weak)) void lpm_wakeup(void) {
     chSysUnlock();
 #else
     halInit();
+    /* halInit() re-runs stInit(), which restarts the system tick timer
+     * from 0 (32-bit @ 100 kHz, wraps every ~11.9 h). The CKBT51 branch
+     * above re-inits the QMK timer; this one never did, so timer_read32()
+     * jumped forward by up to ~12 h on every wake-up. Visible effect:
+     * lkbt51_task()'s comm-timeout watchdog fired right after wake
+     * whenever a packet was still un-ACKed at sleep, hard-resetting the
+     * radio module mid-reconnect. timer_save() in lpm_task() + restore
+     * here keeps timer_read32() continuous across STOP. */
+    timer_restore();
 #endif
+    lpm_diag_stage(LPM_STAGE_HALINIT);
     if (wireless_transport.init) wireless_transport.init(true);
 
 #if defined(DIP_SWITCH_PINS)
@@ -294,9 +306,45 @@ __attribute__((weak)) void lpm_wakeup(void) {
 #if defined(DIP_SWITCH_PINS)
     dip_switch_read(true);
 #endif
+    lpm_diag_stage(LPM_STAGE_MATRIX);
 }
 
 __attribute__((weak)) void lpm_post_wakeup(void) {}
+
+/* Mode-switch pin levels sampled before the wake lines are armed, so
+ * lpm_wake_pending() can tell a switch flip that happened in between. */
+static uint8_t mode_pins_snapshot;
+
+static uint8_t read_mode_pins(void) {
+    uint8_t v = 0;
+#ifdef P24G_MODE_SELECT_PIN
+    v |= gpio_read_pin(P24G_MODE_SELECT_PIN) ? 0x01 : 0;
+#endif
+#ifdef BT_MODE_SELECT_PIN
+    v |= gpio_read_pin(BT_MODE_SELECT_PIN) ? 0x02 : 0;
+#endif
+    return v;
+}
+
+/* Called by lpm_standby() with interrupts masked (PRIMASK), right before
+ * WFI. The wake lines are armed in lpm_enter_low_power(), well before
+ * WFI, with interrupts enabled: an edge in that window is consumed by the
+ * EXTI ISR and WFI then sleeps through it. For the radio module's INT
+ * (active low, held until the MCU reads the module over SPI) a missed
+ * edge means the module can never wake the MCU again. Check the levels
+ * instead of trusting the edges; WFI itself returns on anything that
+ * becomes pending after interrupts were masked. */
+bool lpm_wake_pending(void) {
+#if defined(LK_WIRELESS_ENABLE) || defined(KC_BLUETOOTH_ENABLE)
+    if (gpio_read_pin(WIRELESS_TO_MCU_INT_PIN) == 0) return true;
+#endif
+#if defined(ANANLOG_MATRIX) && defined(ANALOG_MATRIX_WAKEUP_PIN)
+    if (gpio_read_pin(ANALOG_MATRIX_WAKEUP_PIN) == 0) return true;
+#endif
+    if (usb_power_connected()) return true;
+    if (read_mode_pins() != mode_pins_snapshot) return true;
+    return false;
+}
 
 __attribute__((weak)) bool usb_power_connected(void) {
 #ifdef USB_POWER_SENSE_PIN
@@ -372,6 +420,11 @@ void lpm_task(void) {
 
     if (lpm_any_matrix_action() || !allow_low_power_mode(LOW_POWER_MODE)) return;
 
+    /* Keep timer_read32() continuous across STOP, see lpm_wakeup(). */
+    timer_save();
+    mode_pins_snapshot = read_mode_pins();
+    lpm_diag_stage(LPM_STAGE_ENTER);
+
     lpm_pre_enter_low_power();
     lpm_enter_low_power();
     lpm_post_enter_low_power();
@@ -386,4 +439,5 @@ void lpm_task(void) {
     lpm_timer_reset();
     report_buffer_init();
     lpm_set(PM_RUN);
+    lpm_diag_stage(LPM_STAGE_RUN);
 }
